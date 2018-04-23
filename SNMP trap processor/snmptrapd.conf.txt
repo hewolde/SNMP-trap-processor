@@ -1,0 +1,4 @@
+authCommunity log,execute,net public
+disableAuthorization yes
+snmpTrapdAddr udp:50162
+perl do "./traphandler"

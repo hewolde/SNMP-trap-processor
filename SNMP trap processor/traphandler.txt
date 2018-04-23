@@ -1,0 +1,299 @@
+#!/usr/bin/perl
+
+use strict;
+use DBI;
+
+$|++;
+ my $driver = "SQLite";
+ my $database = "mytrap.db";
+ my $dsn = "DBI:$driver:dbname=$database";
+ my $userid = "";
+ my $password = "";
+ my $dbh = DBI->connect($dsn, $userid,$password,{RaiseError => 1}) or die $DBI::errsr;
+ #print "Opened database successfully\n";
+
+system("sudo chmod -R 777 ./");
+
+###### CREATE ######
+my $stmt = qq(CREATE TABLE IF NOT EXISTS trapmessage
+         (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          FQDN TEXT UNIQUE NOT NULL,
+          devstatus INT NOT NULL,
+          reptime  REAL NOT NULL,
+          oldstatus  INT NULL,
+          oldreptime   REAL NULL);
+         );
+
+my $rv = $dbh->prepare($stmt);
+$rv->execute() or die $DBI::errstr;
+  if(($rv->rows) < 0){
+   print $DBI::errstr;
+  }
+  else {
+   $rv->execute() or die $DBI::errstr;
+   #print "Table created successfully\n";
+  }
+#####  DELETE  #####
+my $stmtn = qq(DELETE from trapmessage;);
+my $rvn = $dbh->do($stmtn) or die $DBI::errstr;
+
+# my variales
+my $oidname;
+my $status;
+my $current_status;
+my $unix_time;
+my @array;
+my($ip, $port, $community);
+
+my $fqdn = undef;
+my $devstatus = undef;
+my $reptime = undef;
+my $prevstatus = undef;
+my $oldtime =undef;
+
+my $OID_danger =  ".1.3.6.1.4.1.41717.30";
+
+
+
+print "\n              ((((((((((((((waiting for a trap)))))))))))))))\n\n";
+
+   
+ 
+sub trap_processor{
+ $| = 1;
+print "-------------------------------------------------\n";
+print "           Trap Notification                     \n";
+print "-------------------------------------------------\n";
+
+open MYLOG, ">>traplog.txt" || die "cannot open the log file\n";
+$fqdn = undef;
+foreach my $x(@{$_[1]}){
+   $oidname= sprintf("%s", $x->[0]);
+   #my $value = sprintf("%s",$x->[1]);
+   #print $oidname,":  ", $value, "\n";
+
+################ FQDN of Device ########################
+   if ($oidname eq ".1.3.6.1.4.1.41717.10.1"){
+      $fqdn = sprintf("%s",$x->[1]);
+      $fqdn = substr($fqdn,1);
+      my @fqdn_array = split(/"/,$fqdn);
+      $fqdn = $fqdn_array[0];
+      printf "FQDN: %s\n",$fqdn;
+      print MYLOG "\nFQDN of device: $fqdn\n";
+   }
+  #--------------------------------------------------------
+###################  STATUS OF THE DEVICE ##################
+    elsif($oidname eq ".1.3.6.1.4.1.41717.10.2"){
+       $current_status = undef;
+       $status = sprintf("%s",$x->[1]);
+       #$status  = substr($status,0);
+       #printf "STATUS:%s\n",$status;
+       print MYLOG "\nStatus of the device: $status\n\n";
+
+       $current_status = undef;
+       $current_status = $status;
+      print "CURRENT_STATUS: $current_status\n";
+  #---------------------------------------------------------
+     
+      $unix_time = time;
+
+      # Lets get the IP, PORT and COMMUNITY to send trap
+      my $stmth = qq(SELECT ip,port,community FROM mycredential;);
+      my $sthh = $dbh->prepare($stmth);
+      my $rvh = $sthh->execute() or die $DBI::errstr;
+      $sthh->fetchrow_array();
+      if(($sthh->rows) > 0){ 
+           $sthh->execute() or die $DBI::errstr;      
+           while (my $rowh = $sthh->fetchrow_arrayref()){
+                    ($ip, $port, $community) = @{$rowh};} 
+           $sthh->finish();
+           #printf "credentials:: %s, %d, %s\n",$ip, $port, $community;        
+          }
+
+      ########## STATUS: FAIL #############
+      if($current_status == 3){
+        
+          my $unix_time_fail = time;
+          my $stmt1 = qq(SELECT devstatus,reptime FROM trapmessage WHERE FQDN = '$fqdn';);
+          my $sth1 = $dbh->prepare($stmt1);
+          my $rv1 = $sth1->execute() or die $DBI::errstr;
+
+          $sth1->fetchrow_array();
+          #printf "my row count:%s\n",$sth1->rows;
+          if(($sth1->rows) > 0){
+          #if($rv1>0){
+                $sth1->execute();
+                  {
+                while(my $row = $sth1->fetchrow_arrayref()){
+                     ($prevstatus,$oldtime) = @{$row};
+                      print "$fqdn, $prevstatus, $oldtime\n";
+                     system("sudo snmptrap -v 1 -c $community $ip:$port .1.3.6.1.4.1.41717.10 10.0.2.3 6 247 '' .1.3.6.1.4.1.41717.20.1 s $fqdn .1.3.6.1.4.1.41717.20.2 i  '$unix_time' .1.3.6.1.4.1.41717.20.3 i '$prevstatus' .1.3.6.1.4.1.41717.20.4 i '$oldtime'");
+                     #print "sudo snmptrap -v 1 -c $community $ip:$port .1.3.6.1.4.1.41717.10 127.0.0.1 6 247 '' .1.3.6.1.4.1.41717.20.1 s $fqdn .1.3.6.1.4.1.41717.20.2 i  '$unix_time' .1.3.6.1.4.1.41717.20.3 i '$prevstatus' .1.3.6.1.4.1.41717.20.4 i '$oldtime'\n";
+                     print "FAIL TRAP of $fqdn is sent!\n";
+                  }
+               }
+           }
+
+         # For a device that didnot reported Fail previously
+         else {
+
+                
+               ($prevstatus, $oldtime) = (0,0);
+                system("sudo snmptrap -v 1 -c $community $ip:$port .1.3.6.1.4.1.41717.10 127.0.0.1 6 24 '' .1.3.6.1.4.1.41717.20.1 s $fqdn .1.3.6.1.4.1.41717.20.2 i  $unix_time .1.3.6.1.4.1.41717.20.3 i $prevstatus .1.3.6.1.4.1.41717.20.4 i $oldtime");
+                 printf "FAIL TRAP of $fqdn is reported for the first time!!!\n";
+            }
+
+       }#fail ends here
+
+ #-----------------------------------------------------------------------------      
+
+      ########## STATUS: DANGER #############   
+      elsif($current_status == 2){
+          print "hej DANGER\n";
+          my @payloads = ();
+          my $fqdn_d;
+          my $n = 1;
+         #For current FQDN with status danger that is not stored in db yet
+          my $stmtc = qq(SELECT devstatus,reptime FROM trapmessage WHERE FQDN = '$fqdn';);#or devstatus/oldstatus and reptime/oldreptime
+          my $sthc = $dbh->prepare($stmtc);
+          my $rvc = $sthc->execute() or die $DBI::errstr;
+          $sthc->fetchrow_array();
+          if(($sthc->rows)>0) 
+            { 
+                $sthc->execute() or die $DBI::errstr;      
+               while (my $rowc = $sthc->fetchrow_arrayref()){
+                   ($prevstatus,$oldtime) = @{$rowc};} 
+              $sthc->finish();
+                        
+            }
+           else
+               {
+                 ($prevstatus,$oldtime) = (0,0);
+                }
+
+
+           push(@payloads,($OID_danger."."."1", "s", "$fqdn",
+                           $OID_danger."."."2","i","$unix_time",  
+                           $OID_danger."."."3","i","$prevstatus",
+                           $OID_danger."."."4","i", "$oldtime")); 
+
+         # For devices that reported danger previously
+          my $stmt2 = qq(SELECT FQDN,oldstatus,oldreptime FROM trapmessage WHERE devstatus = 2;);
+          my $sth2 = $dbh->prepare($stmt2);
+          my $rv2 = $sth2->execute() or die $DBI::errstr;
+          print "successful query!\n";
+          $sth2->fetchrow_array();
+          if($sth2->rows > 0){
+                $sth2->execute();
+                while(my $row = $sth2->fetchrow_arrayref()){
+                       ($fqdn_d, $prevstatus, $oldtime) = @{$row};
+                       if($fqdn_d eq $fqdn){
+                        next;
+                        }
+                       printf "FQDN:%s  status:%d  report time:%s\n",$fqdn_d, $prevstatus, $oldtime;
+                        $n++;
+                         my ($p1,$p2,$p3,$p4);
+                         my $d=($n-1)*4;
+                           $p1=$d+1;
+                           $p2=$d+2;
+                           $p3=$d+3;
+                           $p4=$d+4;
+                        
+                         
+                     push(@payloads,($OID_danger."."."$p1", "s", "$fqdn_d",
+                                 $OID_danger."."."$p2","i","$unix_time", 
+                                 $OID_danger."."."$p3","i","$prevstatus",
+                                 $OID_danger."."."$p4","i", "$oldtime"));
+                     }
+              $sth2->finish();   
+              print "this are danger payloads @payloads\n";
+
+              system("sudo snmptrap -v 1 -c $community $ip:$port $OID_danger 127.0.0.1 6 247 '' @payloads"); #where is tthe trap going"10.0.2.3
+              print "DANGER TRAP is repoted!\n";
+           }
+
+       ### For current FQDN with status danger
+         else {
+
+              ($prevstatus, $oldtime) = (0,0);
+              system("sudo snmptrap -v 1 -c $community $ip:$port $OID_danger 127.0.0.1 6 24 '' .1.3.6.1.4.1.41717.30.1 s '$fqdn' .1.3.6.1.4.1.41717.30.2 i  '$unix_time' .1.3.6.1.4.1.41717.30.3 i $prevstatus .1.3.6.1.4.1.41717.30.4 i $oldtime");
+              print "DANGER TRAP of $fqdn is reported for the first time!\n";  
+          }
+          
+            
+      }#elsif danger
+      #--------------------------------------------------------------------------------------
+   else{
+      #print "Do nothing\n";
+    }
+
+    }
+}#foreach
+$| = 1;
+
+print "----------------------------------------------------\n";
+print "            DATABASE SECTION                        \n";
+print "----------------------------------------------------\n";
+
+# print "*************$fqdn, $current_status***********\n";
+  if(!defined($fqdn)){
+    print"NO DEVICE REPORTED!\n";
+   }
+
+ # LETs insert/update into database 
+  else{   
+      my $stmt3 = qq(SELECT devstatus ,reptime FROM trapmessage WHERE FQDN = '$fqdn';);
+      my $sth3 = $dbh->prepare($stmt3);
+      $sth3->execute() or die $DBI::errstr;
+      $sth3->fetchrow_array();
+      #printf "what is my row count:%s\n",$sth3->rows;
+      if(($sth3->rows)> 0){
+           $sth3->execute()or die $DBI::errstr;
+           #print "i am about to get my old values==> ";
+           {
+           while(my $mssgrow = $sth3->fetchrow_arrayref()){
+               ($devstatus, $reptime)= @{$mssgrow};
+                  $prevstatus = $devstatus;
+                  $oldtime = $reptime;
+                  #print "$prevstatus, $oldtime\n"; 
+               }}
+        }
+      else{
+         ($prevstatus, $oldtime) = (0,0);
+          print"no previous value!\n";
+      }
+
+     # INSERT new values
+     #print"No values exist for device:$fqdn so I am about to insert\n";
+     my $stmt4 = qq(INSERT OR IGNORE INTO trapmessage(FQDN,devstatus,reptime,oldstatus,oldreptime) VALUES('$fqdn',$current_status, '$unix_time',$prevstatus,'$oldtime')); 
+     my $sth4 = $dbh->prepare($stmt4);
+     my $rv4 = $sth4->execute() or die $DBI::errstr;
+     $sth4->fetchrow_array();
+     if (($sth4->rows) > 0)
+        {
+          print"INSERTED!\n";
+           }
+
+     # UPDATE existing values
+     else{
+       #print "I am about to update: $fqdn & $current_status\n";
+       my $stmt5 = qq(UPDATE trapmessage set devstatus = $current_status, reptime = '$unix_time', oldstatus = $prevstatus,oldreptime = '$oldtime' WHERE FQDN LIKE '$fqdn';);    
+       my $sth5 = $dbh->prepare($stmt5);
+       my $rv5= $sth5->execute()or die $DBI::errstr;
+       #$sth5->fetchrow_array();
+       #if (($sth5->rows) >0)
+       #{#$sth5->execute();
+       #print"Successfully updated for device:$fqdn";}
+     }
+
+ }#else insert/update
+
+close MYLOG;
+}
+
+ NetSNMP::TrapReceiver::register("all", \&trap_processor) || 
+      warn "failed to register my perl trap handler\n";
+print STDERR "Loadded the perl snmptrapd handler\n";
+
+#-----------------------------------------------------------------------------------------------------
+
